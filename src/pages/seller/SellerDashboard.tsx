@@ -34,12 +34,6 @@ import {
 import { useAuth } from '../../AuthContext';
 import { Order, Prescription, Notification } from '../../types';
 import { api } from '../../services/api';
-import { 
-  MOCK_ORDERS, 
-  MOCK_PRESCRIPTIONS, 
-  MOCK_NOTIFICATIONS,
-  MOCK_MEDICINE_CATALOG 
-} from '../../staticData';
 import { motion } from 'motion/react';
 import { Link } from 'react-router-dom';
 
@@ -64,26 +58,45 @@ const SellerDashboard: React.FC = () => {
       
       try {
         setLoading(true);
-        const orders = await api.getOrders();
-        // Filter for this seller's pharmacy (assuming pharmacy-1 for demo)
-        const sellerOrders = orders.filter((o: any) => o.pharmacyId === 'pharmacy-1');
-        
-        const prescriptions = MOCK_PRESCRIPTIONS as Prescription[];
-        const sellerNotifications = MOCK_NOTIFICATIONS as Notification[];
+        const pharmacies = await api.getPharmacies({ sellerId: profile.uid });
+        const myPharmacy = pharmacies[0];
+        if (!myPharmacy) {
+          setStats({
+            todayOrders: 0,
+            pendingPrescriptions: 0,
+            lowStock: 0,
+            outForDelivery: 0,
+            monthlyRevenue: 0,
+            settlementDue: 0,
+          });
+          setRecentOrders([]);
+          setPendingPrescriptions([]);
+          setNotifications([]);
+          return;
+        }
+
+        const [sellerOrders, inventory, prescriptions, sellerNotifications] = await Promise.all([
+          api.getOrders({ pharmacyId: myPharmacy.id }),
+          api.getInventory({ pharmacyId: myPharmacy.id }),
+          api.getPrescriptions({ pharmacyId: myPharmacy.id }),
+          api.getNotifications({ userId: profile.uid }),
+        ]);
         
         const totalRevenue = sellerOrders.reduce((acc: number, o: any) => acc + o.totalAmount, 0);
+        const lowStockCount = inventory.filter((i: any) => Number(i.stock) < 20).length;
+        const outForDelivery = sellerOrders.filter((o: any) => ['ready', 'on_the_way', 'picked_up'].includes(o.status)).length;
         
         setStats({
           todayOrders: sellerOrders.filter((o: any) => o.createdAt.startsWith(new Date().toISOString().split('T')[0])).length,
-          pendingPrescriptions: prescriptions.filter(p => p.status === 'under_review').length,
-          lowStock: 8,
-          outForDelivery: 3,
+          pendingPrescriptions: prescriptions.filter((p: any) => p.status === 'pending').length,
+          lowStock: lowStockCount,
+          outForDelivery,
           monthlyRevenue: totalRevenue,
           settlementDue: Math.round(totalRevenue * 0.15)
         });
 
         setRecentOrders(sellerOrders.slice(0, 5));
-        setPendingPrescriptions(prescriptions.filter(p => p.status === 'under_review'));
+        setPendingPrescriptions(prescriptions.filter((p: any) => p.status === 'pending'));
         setNotifications(sellerNotifications);
       } catch (error) {
         console.error('Failed to fetch seller data:', error);

@@ -19,41 +19,85 @@ const InventoryManagement: React.FC = () => {
   const [medicines, setMedicines] = useState<SellerMedicine[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
+  const [pharmacyId, setPharmacyId] = useState<string>('');
+  const [errorMessage, setErrorMessage] = useState('');
+
+  const fetchInventory = async () => {
+    if (!profile) return;
+    try {
+      setLoading(true);
+      const pharmacies = await api.getPharmacies({ sellerId: profile.uid });
+      if (pharmacies.length === 0) {
+        setErrorMessage('No pharmacy found for this seller account.');
+        setMedicines([]);
+        return;
+      }
+      setErrorMessage('');
+      const pId = pharmacies[0].id;
+      setPharmacyId(pId);
+
+      const inventory = await api.getInventory({ pharmacyId: pId });
+      
+      const enriched = await Promise.all(inventory.map(async (item: any) => {
+        const masterData = item.medicineMasterId
+          ? await api.getMedicines({ id: item.medicineMasterId })
+          : [];
+        return { 
+          ...item, 
+          masterData: Array.isArray(masterData) ? masterData[0] : masterData 
+        };
+      }));
+
+      setMedicines(enriched);
+    } catch (err: any) {
+      setErrorMessage(err?.message || 'Error fetching inventory');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const fetchInventory = async () => {
-      if (!profile) return;
-      try {
-        // 1. Get pharmacy for this seller
-        const pharmacies = await api.getPharmacies({ sellerId: profile.uid });
-        if (pharmacies.length === 0) {
-          setLoading(false);
-          return;
-        }
-        const pharmacyId = pharmacies[0].id;
-
-        // 2. Get inventory for this pharmacy
-        const inventory = await api.getInventory(pharmacyId);
-        
-        // 3. Enrich with master data
-        const enriched = await Promise.all(inventory.map(async (item: any) => {
-          const masterData = await api.getMedicines({ id: item.medicineMasterId });
-          return { 
-            ...item, 
-            masterData: Array.isArray(masterData) ? masterData[0] : masterData 
-          };
-        }));
-
-        setMedicines(enriched);
-      } catch (err) {
-        console.error('Error fetching inventory:', err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
     fetchInventory();
   }, [profile]);
+
+  const handleAdd = async () => {
+    if (!pharmacyId) return;
+    const name = (window.prompt('Medicine name') || '').trim();
+    if (!name) return;
+    const stock = Number(window.prompt('Stock quantity', '0') || 0);
+    const price = Number(window.prompt('Price', '0') || 0);
+    if (Number.isNaN(stock) || Number.isNaN(price) || stock < 0 || price <= 0) {
+      alert('Please enter valid stock and price.');
+      return;
+    }
+    try {
+      await api.createInventory({ pharmacyId, name, stock, price, isVisible: true, isFeatured: false });
+      await fetchInventory();
+    } catch (error) {
+      console.error('Failed to add inventory item', error);
+    }
+  };
+
+  const handleEdit = async (item: any) => {
+    const stock = Number(window.prompt('Update stock', String(item.stock)) || item.stock);
+    const price = Number(window.prompt('Update price', String(item.price)) || item.price);
+    try {
+      await api.updateInventory(item.id, { stock, price });
+      await fetchInventory();
+    } catch (error) {
+      console.error('Failed to update inventory item', error);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!window.confirm('Delete this inventory item?')) return;
+    try {
+      await api.deleteInventory(id);
+      await fetchInventory();
+    } catch (error) {
+      console.error('Failed to delete inventory item', error);
+    }
+  };
 
   const filtered = medicines.filter(m => 
     m.masterData?.brandName.toLowerCase().includes(searchQuery.toLowerCase())
@@ -68,11 +112,16 @@ const InventoryManagement: React.FC = () => {
           <h1 className="text-2xl font-bold text-slate-900">Inventory Management</h1>
           <p className="text-slate-500 text-sm">Manage your medicine stock and pricing</p>
         </div>
-        <button className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100">
+        <button
+          onClick={handleAdd}
+          className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100"
+        >
           <Plus className="w-4 h-4" />
           Add Medicine
         </button>
       </div>
+
+      {errorMessage && <div className="p-3 rounded-xl bg-amber-50 text-amber-700 text-sm font-medium">{errorMessage}</div>}
 
       <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row gap-4">
         <div className="relative flex-1">
@@ -143,10 +192,16 @@ const InventoryManagement: React.FC = () => {
                   </td>
                   <td className="px-6 py-4 text-right">
                     <div className="flex items-center justify-end gap-2">
-                      <button className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all">
+                      <button
+                        onClick={() => handleEdit(item)}
+                        className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all"
+                      >
                         <Edit2 className="w-4 h-4" />
                       </button>
-                      <button className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all">
+                      <button
+                        onClick={() => handleDelete(item.id)}
+                        className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all"
+                      >
                         <Trash2 className="w-4 h-4" />
                       </button>
                     </div>

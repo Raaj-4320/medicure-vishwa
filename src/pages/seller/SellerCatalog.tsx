@@ -20,23 +20,50 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { SellerMedicine, MedicineMaster } from '../../types';
-import { MOCK_SELLER_INVENTORY, MOCK_MEDICINE_CATALOG } from '../../staticData';
+import { api } from '../../services/api';
+import { useAuth } from '../../AuthContext';
 
 const SellerCatalog: React.FC = () => {
+  const { profile } = useAuth();
   const [inventory, setInventory] = useState<SellerMedicine[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [filter, setFilter] = useState<'all' | 'active' | 'hidden' | 'featured'>('all');
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [selectedMed, setSelectedMed] = useState<SellerMedicine | null>(null);
+  const [pharmacyId, setPharmacyId] = useState('');
+  const [masterCatalog, setMasterCatalog] = useState<any[]>([]);
 
-  useEffect(() => {
-    // Join mock data
-    const joinedData = MOCK_SELLER_INVENTORY.map(inv => ({
+  const loadData = async () => {
+    if (!profile) return;
+    const pharmacies = await api.getPharmacies({ sellerId: profile.uid });
+    if (!pharmacies.length) {
+      setInventory([]);
+      return;
+    }
+    const myPharmacyId = pharmacies[0].id;
+    setPharmacyId(myPharmacyId);
+    const [items, masters] = await Promise.all([
+      api.getInventory({ pharmacyId: myPharmacyId }),
+      api.getMedicines(),
+    ]);
+    setMasterCatalog(masters);
+    const joinedData = items.map((inv: any) => ({
       ...inv,
-      masterData: MOCK_MEDICINE_CATALOG.find(m => m.id === inv.medicineMasterId)
+      masterData: masters.find((m: any) => m.id === inv.medicineMasterId) || {
+        brandName: inv.name,
+        genericName: inv.name,
+        category: 'General',
+        image: 'https://picsum.photos/seed/med/200/200',
+        rxRequired: false,
+        schedule: 'None',
+      }
     })) as SellerMedicine[];
     setInventory(joinedData);
-  }, []);
+  };
+
+  useEffect(() => {
+    loadData().catch((err) => console.error('Failed to load catalog', err));
+  }, [profile]);
 
   const filteredInventory = inventory.filter(item => {
     const matchesFilter = filter === 'all' || 
@@ -49,11 +76,36 @@ const SellerCatalog: React.FC = () => {
   });
 
   const toggleVisibility = (id: string) => {
-    setInventory(prev => prev.map(item => item.id === id ? { ...item, isVisible: !item.isVisible } : item));
+    const item = inventory.find((i) => i.id === id);
+    if (!item) return;
+    api.updateInventory(id, { isVisible: !item.isVisible })
+      .then(() => loadData())
+      .catch((err) => console.error('Failed to update visibility', err));
   };
 
   const toggleFeatured = (id: string) => {
-    setInventory(prev => prev.map(item => item.id === id ? { ...item, isFeatured: !item.isFeatured } : item));
+    const item = inventory.find((i) => i.id === id);
+    if (!item) return;
+    api.updateInventory(id, { isFeatured: !item.isFeatured })
+      .then(() => loadData())
+      .catch((err) => console.error('Failed to update featured', err));
+  };
+
+  const saveListing = async () => {
+    const price = Number((document.getElementById('catalog-price') as HTMLInputElement)?.value || 0);
+    const stock = Number((document.getElementById('catalog-stock') as HTMLInputElement)?.value || 0);
+    const medicineMasterId = (document.getElementById('catalog-master-id') as HTMLSelectElement)?.value || '';
+    const selectedMaster = masterCatalog.find((m) => m.id === medicineMasterId);
+    const name = selectedMaster?.brandName || 'Medicine';
+    if (!pharmacyId || !price) return;
+    const duplicate = inventory.find((item: any) => medicineMasterId && item.medicineMasterId === medicineMasterId);
+    if (duplicate) {
+      await api.updateInventory(duplicate.id, { stock: Number(duplicate.stock || 0) + stock, price });
+    } else {
+      await api.createInventory({ pharmacyId, name, stock, price, medicineMasterId, isVisible: true, isFeatured: false });
+    }
+    setIsAddModalOpen(false);
+    await loadData();
   };
 
   return (
@@ -167,7 +219,14 @@ const SellerCatalog: React.FC = () => {
                   <Edit2 className="w-3.5 h-3.5" />
                   Edit
                 </button>
-                <button className="p-2 bg-slate-50 text-red-600 rounded-xl hover:bg-red-50 transition-colors border border-slate-100">
+                <button
+                  onClick={async () => {
+                    if (!window.confirm('Delete this listing?')) return;
+                    await api.deleteInventory(item.id);
+                    await loadData();
+                  }}
+                  className="p-2 bg-slate-50 text-red-600 rounded-xl hover:bg-red-50 transition-colors border border-slate-100"
+                >
                   <Trash2 className="w-4 h-4" />
                 </button>
               </div>
@@ -199,16 +258,16 @@ const SellerCatalog: React.FC = () => {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div className="space-y-2">
                     <label className="text-sm font-bold text-slate-700">Select Medicine</label>
-                    <select className="w-full p-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-sm">
+                    <select id="catalog-master-id" className="w-full p-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-sm">
                       <option>Search from Master Catalog...</option>
-                      {MOCK_MEDICINE_CATALOG.map(m => (
+                      {masterCatalog.map(m => (
                         <option key={m.id} value={m.id}>{m.brandName} ({m.genericName})</option>
                       ))}
                     </select>
                   </div>
                   <div className="space-y-2">
                     <label className="text-sm font-bold text-slate-700">MRP (₹)</label>
-                    <input type="number" placeholder="0.00" className="w-full p-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-sm" />
+                    <input id="catalog-price" type="number" placeholder="0.00" className="w-full p-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-sm" />
                   </div>
                   <div className="space-y-2">
                     <label className="text-sm font-bold text-slate-700">Selling Price (₹)</label>
@@ -216,7 +275,7 @@ const SellerCatalog: React.FC = () => {
                   </div>
                   <div className="space-y-2">
                     <label className="text-sm font-bold text-slate-700">Initial Stock</label>
-                    <input type="number" placeholder="0" className="w-full p-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-sm" />
+                    <input id="catalog-stock" type="number" placeholder="0" className="w-full p-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-sm" />
                   </div>
                 </div>
                 <div className="flex items-center gap-4 p-4 bg-emerald-50 rounded-2xl border border-emerald-100">
@@ -233,7 +292,7 @@ const SellerCatalog: React.FC = () => {
                 >
                   Cancel
                 </button>
-                <button className="px-8 py-2.5 bg-emerald-600 text-white rounded-xl text-sm font-bold hover:bg-emerald-700 transition-colors shadow-lg shadow-emerald-200">
+                <button onClick={saveListing} className="px-8 py-2.5 bg-emerald-600 text-white rounded-xl text-sm font-bold hover:bg-emerald-700 transition-colors shadow-lg shadow-emerald-200">
                   Save Listing
                 </button>
               </div>
